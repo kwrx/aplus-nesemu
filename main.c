@@ -80,43 +80,43 @@ void os_video_init()
 
     if ((fd = open("/dev/fb0", O_RDWR)) < 0)
     {
-        fprintf(stderr, "doom: open() failed: cannot open /dev/fb0: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: open() failed: cannot open /dev/fb0: %s\n", strerror(errno));
         exit(1);
     }
 
     if (ioctl(fd, FBIOGET_VSCREENINFO, &context.var) < 0)
     {
-        fprintf(stderr, "doom: ioctl(FBIOGET_VSCREENINFO) failed: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: ioctl(FBIOGET_VSCREENINFO) failed: %s\n", strerror(errno));
         exit(1);
     }
 
     if (ioctl(fd, FBIOGET_FSCREENINFO, &context.fix) < 0)
     {
-        fprintf(stderr, "doom: ioctl(FBIOGET_FSCREENINFO) failed: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: ioctl(FBIOGET_FSCREENINFO) failed: %s\n", strerror(errno));
         exit(1);
     }
 
     if (!context.fix.smem_start || !context.var.xres_virtual || !context.var.yres_virtual)
     {
-        fprintf(stderr, "doom: wrong framebuffer configuration\n");
+        fprintf(stderr, "nesemu: wrong framebuffer configuration\n");
         exit(1);
     }
 
     if (close(fd) < 0)
     {
-        fprintf(stderr, "doom: close() failed: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: close() failed: %s\n", strerror(errno));
         exit(1);
     }
 
     if ((context.kbd = open("/dev/kbd", O_RDONLY)) < 0)
     {
-        fprintf(stderr, "doom: open() failed: cannot open /dev/kbd: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: open() failed: cannot open /dev/kbd: %s\n", strerror(errno));
         exit(1);
     }
 
     if (fcntl(context.kbd, F_SETFL, O_NONBLOCK) < 0)
     {
-        fprintf(stderr, "doom: fcntl(F_SETFL) failed: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: fcntl(F_SETFL) failed: %s\n", strerror(errno));
         exit(1);
     }
 }
@@ -149,7 +149,7 @@ uint32_t os_getticks()
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
     {
-        fprintf(stderr, "doom: clock_gettime() failed: %s\n", strerror(errno));
+        fprintf(stderr, "nesemu: clock_gettime() failed: %s\n", strerror(errno));
         exit(1);
     }
 
@@ -161,7 +161,7 @@ int os_getkey()
 
     event_t ev;
 
-    if (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
+    while (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
     {
         context.keys[ev.ev_key.vkey] = ev.ev_key.down;
     }
@@ -332,8 +332,8 @@ int main(int argc, char *argv[])
         os_draw_frame(nes_ppu.screen_bitmap);
 
         /* 60 FPS framerate limit */
-        while ((currentTime = os_getticks()) < (lastTime + FPS_UPDATE_TIME_MS))
-            ;
+        // while ((currentTime = os_getticks()) < (lastTime + FPS_UPDATE_TIME_MS))
+            // ;
 
         lastTime = currentTime;
     }
