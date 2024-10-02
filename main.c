@@ -156,14 +156,14 @@ uint32_t os_getticks()
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
-int os_getkey(int *pressed, unsigned char *key)
+int os_getkey()
 {
 
     event_t ev;
 
     if (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
     {
-        context.keys[ev.ev_key.key] = ev.ev_key.down;
+        context.keys[ev.ev_key.vkey] = ev.ev_key.down;
     }
  
 }
