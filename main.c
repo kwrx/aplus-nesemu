@@ -18,6 +18,22 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <getopt.h>
+#include <errno.h>
+#include <assert.h>
+#include <poll.h>
+#include <sched.h>
+
+#include <aplus/fb.h>
+#include <aplus/events.h>
+#include <aplus/input.h>
+
+#define _POSIX_SOURCE
+#include <time.h>
 
 /* NES specific */
 #include <nes.h>
@@ -26,53 +42,158 @@
 #include <cartridge.h>
 #include <controller.h>
 
-#define debug_print(fmt, ...) \
-            do { if (DEBUG_MAIN) printf(fmt, __VA_ARGS__); } while (0)
+#define debug_print(fmt, ...)         \
+    do                                \
+    {                                 \
+        if (DEBUG_MAIN)               \
+            printf(fmt, __VA_ARGS__); \
+    } while (0)
 
-void die (const char * format, ...)
+void die(const char *format, ...)
 {
     va_list vargs;
-    va_start (vargs, format);
-    vfprintf (stderr, format, vargs);
-    va_end (vargs);
-    exit (1);
+    va_start(vargs, format);
+    vfprintf(stderr, format, vargs);
+    va_end(vargs);
+    exit(1);
 }
 
-#include <SDL2/SDL.h>
-
 #define FPS 60
-#define FPS_UPDATE_TIME_MS (1000/FPS)
+#define FPS_UPDATE_TIME_MS (1000 / FPS)
+
+static struct
+{
+
+    struct fb_var_screeninfo var;
+    struct fb_fix_screeninfo fix;
+
+    int kbd;
+
+    uint8_t keys[NR_KEYS];
+
+} context;
+
+void os_video_init()
+{
+
+    int fd;
+
+    if ((fd = open("/dev/fb0", O_RDWR)) < 0)
+    {
+        fprintf(stderr, "doom: open() failed: cannot open /dev/fb0: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &context.var) < 0)
+    {
+        fprintf(stderr, "doom: ioctl(FBIOGET_VSCREENINFO) failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &context.fix) < 0)
+    {
+        fprintf(stderr, "doom: ioctl(FBIOGET_FSCREENINFO) failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    if (!context.fix.smem_start || !context.var.xres_virtual || !context.var.yres_virtual)
+    {
+        fprintf(stderr, "doom: wrong framebuffer configuration\n");
+        exit(1);
+    }
+
+    if (close(fd) < 0)
+    {
+        fprintf(stderr, "doom: close() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    if ((context.kbd = open("/dev/kbd", O_RDONLY)) < 0)
+    {
+        fprintf(stderr, "doom: open() failed: cannot open /dev/kbd: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    if (fcntl(context.kbd, F_SETFL, O_NONBLOCK) < 0)
+    {
+        fprintf(stderr, "doom: fcntl(F_SETFL) failed: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+void os_draw_frame()
+{
+
+    uintptr_t d = (uintptr_t)context.fix.smem_start;
+    uintptr_t s = (uintptr_t)DG_ScreenBuffer;
+
+    for (size_t y = 0; y < DOOMGENERIC_RESY; y++)
+    {
+
+        memcpy((void *)d, (const void *)s, DOOMGENERIC_RESX * sizeof(uint32_t));
+
+        s += DOOMGENERIC_RESX * sizeof(uint32_t);
+        d += context.fix.line_length;
+    }
+}
+
+void os_sleep(unsigned int ms)
+{
+    usleep(ms * 1000);
+}
+
+uint32_t os_getticks()
+{
+
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+    {
+        fprintf(stderr, "doom: clock_gettime() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+int os_getkey(int *pressed, unsigned char *key)
+{
+
+    event_t ev;
+
+    if (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
+    {
+        context.keys[ev.ev_key] = ev.ev_down;
+    }
+ 
+}
 
 /* Query a button's state.
    Returns 1 if button #b is pressed. */
 uint8_t nes_key_state(uint8_t b)
 {
-    const Uint8* keyboard;
-    SDL_PumpEvents();
-    keyboard = SDL_GetKeyboardState(NULL);
-
     switch (b)
     {
-        case 0: // On / Off
-            return 1;
-        case 1: // A
-            return keyboard[SDL_SCANCODE_A] ? 1 : 0;
-        case 2: // B
-            return keyboard[SDL_SCANCODE_S] ? 1 : 0;
-        case 3: // SELECT
-            return keyboard[SDL_SCANCODE_C] ? 1 : 0;
-        case 4: // START
-            return keyboard[SDL_SCANCODE_RETURN] ? 1 : 0;
-        case 5: // UP
-            return keyboard[SDL_SCANCODE_UP] ? 1 : 0;
-        case 6: // DOWN
-            return keyboard[SDL_SCANCODE_DOWN] ? 1 : 0;
-        case 7: // LEFT
-            return keyboard[SDL_SCANCODE_LEFT] ? 1 : 0;
-        case 8: // RIGHT
-            return keyboard[SDL_SCANCODE_RIGHT] ? 1 : 0;
-        default:
-            return 1;
+    case 0: // On / Off
+        return 1;
+    case 1: // A
+        return context.keys[KEY_A] ? 1 : 0;
+    case 2: // B
+        return context.keys[KEY_S] ? 1 : 0;
+    case 3: // SELECT
+        return context.keys[KEY_C] ? 1 : 0;
+    case 4: // START
+        return context.keys[KEY_ENTER] ? 1 : 0;
+    case 5: // UP
+        return context.keys[KEY_UP] ? 1 : 0;
+    case 6: // DOWN
+        return context.keys[KEY_DOWN] ? 1 : 0;
+    case 7: // LEFT
+        return context.keys[KEY_LEFT] ? 1 : 0;
+    case 8: // RIGHT
+        return context.keys[KEY_RIGHT] ? 1 : 0;
+    default:
+        return 1;
     }
 }
 
@@ -80,26 +201,26 @@ uint8_t nes_key_state_ctrl2(uint8_t b)
 {
     switch (b)
     {
-        case 0: // On / Off
-            return 1;
-        case 1: // A
-            return 0;
-        case 2: // B
-            return 0;
-        case 3: // SELECT
-            return 0;
-        case 4: // START
-            return 0;
-        case 5: // UP
-            return 0;
-        case 6: // DOWN
-            return 0;
-        case 7: // LEFT
-            return 0;
-        case 8: // RIGHT
-            return 0;
-        default:
-            return 1;
+    case 0: // On / Off
+        return 1;
+    case 1: // A
+        return 0;
+    case 2: // B
+        return 0;
+    case 3: // SELECT
+        return 0;
+    case 4: // START
+        return 0;
+    case 5: // UP
+        return 0;
+    case 6: // DOWN
+        return 0;
+    case 7: // LEFT
+        return 0;
+    case 8: // RIGHT
+        return 0;
+    default:
+        return 1;
     }
 }
 
@@ -109,7 +230,7 @@ int main(int argc, char *argv[])
     static nes_ppu_t nes_ppu;
     static nes_cpu_t nes_cpu;
     static nes_cartridge_t nes_cart;
-    static nes_mem_td nes_memory = { 0 };
+    static nes_mem_td nes_memory = {0};
 
     uint32_t cpu_clocks = 0;
     uint32_t ppu_clocks = 0;
@@ -117,7 +238,7 @@ int main(int argc, char *argv[])
     uint32_t ppu_clock_index = 0;
     uint8_t ppu_status = 0;
 
-    if(argc != 2)
+    if (argc != 2)
     {
         die("Please specify rom file\n");
     }
@@ -126,7 +247,7 @@ int main(int argc, char *argv[])
     nes_cart_init(&nes_cart, &nes_memory);
 
     /* load rom */
-    if(nes_cart_load_rom(&nes_cart, argv[1]) != 0)
+    if (nes_cart_load_rom(&nes_cart, argv[1]) != 0)
     {
         die("ROM does not exist\n");
     }
@@ -138,75 +259,46 @@ int main(int argc, char *argv[])
     /* init ppu */
     nes_ppu_init(&nes_ppu, &nes_memory);
 
-
-
-    /* SDL2 Initialization */
+    /* Initialization */
     unsigned int lastTime = 0, currentTime;
 
-    if (SDL_Init(SDL_INIT_EVERYTHING) != 0)
-    {
-        die("Failed to initialise SDL\n");
-    }
-
-    SDL_Window *window = SDL_CreateWindow("nes_emu",
-                                          SDL_WINDOWPOS_UNDEFINED,
-                                          SDL_WINDOWPOS_UNDEFINED,
-                                          256*5,
-                                          240*5,
-                                          SDL_WINDOW_OPENGL);
-    if (window == NULL)
-    {
-        die("Could not create a window: %s", SDL_GetError());
-    }
-
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (renderer == NULL)
-    {
-        die("Could not create a renderer: %s", SDL_GetError());
-    }
-
-    SDL_Texture * texture = SDL_CreateTexture(renderer,
-            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 256, 240);
+    os_video_init();
 
     while (1)
     {
-        // Get the next event
-        SDL_Event event;
-        if (SDL_PollEvent(&event))
-        {
-            if (event.type == SDL_QUIT)
-            {
-                break;
-            }
-        }
+
+        os_getkey();
 
         /* NES core loop */
-        for(;;)
+        for (;;)
         {
             cpu_clocks = 0;
-            if(!ppu_rest_clocks)
+            if (!ppu_rest_clocks)
             {
-                if(ppu_status & PPU_STATUS_NMI)
+                if (ppu_status & PPU_STATUS_NMI)
                     cpu_clocks += nes_cpu_nmi(&nes_cpu);
                 cpu_clocks += nes_cpu_run(&nes_cpu);
             }
 
             /* the ppu runs at a 3 times higher clock rate than the cpu
             so we need to give the ppu some clocks here to catchup */
-            ppu_clocks = (cpu_clocks*3) + ppu_rest_clocks;
+            ppu_clocks = (cpu_clocks * 3) + ppu_rest_clocks;
             ppu_status = 0;
-            for(ppu_clock_index=0;ppu_clock_index<ppu_clocks;ppu_clock_index++)
+            for (ppu_clock_index = 0; ppu_clock_index < ppu_clocks; ppu_clock_index++)
             {
                 ppu_status |= nes_ppu_run(&nes_ppu, nes_cpu.num_cycles);
-                if(ppu_status & PPU_STATUS_FRAME_READY) break;
-                else ppu_rest_clocks = 0;
+                if (ppu_status & PPU_STATUS_FRAME_READY)
+                    break;
+                else
+                    ppu_rest_clocks = 0;
             }
 
             ppu_rest_clocks = (ppu_clocks - ppu_clock_index);
 
             nes_ppu_dump_regs(&nes_ppu);
 
-            if(ppu_status & PPU_STATUS_FRAME_READY) break;
+            if (ppu_status & PPU_STATUS_FRAME_READY)
+                break;
         }
 
         /* Commented DEBUG code */
@@ -237,21 +329,14 @@ int main(int argc, char *argv[])
         //     printf("OAM: %d %x\n", i, nes_memory.oam_memory[i]);
         // }
 
-        SDL_UpdateTexture(texture, NULL, nes_ppu.screen_bitmap, 256 * sizeof(Uint32));
-
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
+        os_draw_frame();
 
         /* 60 FPS framerate limit */
-        while ((currentTime = SDL_GetTicks()) < (lastTime + FPS_UPDATE_TIME_MS));
-        lastTime = currentTime;
-        SDL_RenderPresent(renderer);
-    }
+        while ((currentTime = os_getticks()) < (lastTime + FPS_UPDATE_TIME_MS))
+            ;
 
-    // Tidy up
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+        lastTime = currentTime;
+    }
 
     return 0;
 }
