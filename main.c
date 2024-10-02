@@ -121,18 +121,18 @@ void os_video_init()
     }
 }
 
-void os_draw_frame()
+void os_draw_frame(void* screen)
 {
 
     uintptr_t d = (uintptr_t)context.fix.smem_start;
-    uintptr_t s = (uintptr_t)DG_ScreenBuffer;
+    uintptr_t s = (uintptr_t)screen;
 
-    for (size_t y = 0; y < DOOMGENERIC_RESY; y++)
+    for (size_t y = 0; y < 240; y++)
     {
 
-        memcpy((void *)d, (const void *)s, DOOMGENERIC_RESX * sizeof(uint32_t));
+        memcpy((void *)d, (const void *)s, 256 * sizeof(uint32_t));
 
-        s += DOOMGENERIC_RESX * sizeof(uint32_t);
+        s += 256 * sizeof(uint32_t);
         d += context.fix.line_length;
     }
 }
@@ -163,7 +163,7 @@ int os_getkey(int *pressed, unsigned char *key)
 
     if (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
     {
-        context.keys[ev.ev_key] = ev.ev_down;
+        context.keys[ev.ev_key.key] = ev.ev_key.down;
     }
  
 }
@@ -329,7 +329,7 @@ int main(int argc, char *argv[])
         //     printf("OAM: %d %x\n", i, nes_memory.oam_memory[i]);
         // }
 
-        os_draw_frame();
+        os_draw_frame(nes_ppu.screen_bitmap);
 
         /* 60 FPS framerate limit */
         while ((currentTime = os_getticks()) < (lastTime + FPS_UPDATE_TIME_MS))

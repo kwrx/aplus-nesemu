@@ -17,7 +17,7 @@ export PATH=$(pwd)/sdk/bin:$PATH
 
 echo "### Build"
 
-make CC=x86_64-aplus-gcc DESTDIR=$(pwd)/dist -j$(nproc) install
+make CC=x86_64-aplus-gcc DESTDIR=$(pwd)/dist -j$(nproc) install || exit 1
 
 
 echo "### Package"
