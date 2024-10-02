@@ -12,7 +12,7 @@ HDRS=$(shell find nes -name '*.h')
 all: $(OUTPUT)
 
 $(OUTPUT): main.c $(SRCS) $(HDRS)
-	$(CC) -o $(OUTPUT) main.c $(SRCS) -I aplus/include -Wl,--gc-sections -D_DEFAULT_SOURCE
+	$(CC) -o $(OUTPUT) main.c $(SRCS) -I aplus/include -I nes -Wl,--gc-sections -D_DEFAULT_SOURCE
 
 install: $(OUTPUT)
 	mkdir -p $(DESTDIR)/usr
