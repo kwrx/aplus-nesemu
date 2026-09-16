@@ -6,7 +6,7 @@ mkdir -p sdk
 mkdir -p dist
 
 pushd sdk
-wget https://github.com/kwrx/aplus-toolchain/releases/latest/download/x86_64-aplus-toolchain-x86_64-linux-gnu.tar.xz
+wget https://github.com/kwrx/aplus-toolchain/releases/download/0.1.0/x86_64-aplus-toolchain-x86_64-linux-gnu.tar.xz
 tar xJf x86_64-aplus-toolchain-x86_64-linux-gnu.tar.xz
 popd
 
