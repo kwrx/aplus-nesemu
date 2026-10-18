@@ -28,205 +28,184 @@
 #include <poll.h>
 #include <sched.h>
 
-#include <aplus/fb.h>
-#include <aplus/events.h>
 #include <aplus/input.h>
+#include <aplus/ui.h>
+
+#include <cairo/cairo.h>
 
 #define _POSIX_SOURCE
 #include <time.h>
 
-/* NES specific */
 #include <nes.h>
 #include <ppu.h>
 #include <cpu.h>
 #include <cartridge.h>
 #include <controller.h>
 
-#define debug_print(fmt, ...)         \
-    do                                \
-    {                                 \
-        if (DEBUG_MAIN)               \
-            printf(fmt, __VA_ARGS__); \
-    } while (0)
+#define NESEMU_RESX 256
+#define NESEMU_RESY 240
+#define NESEMU_US_PER_FRAME (1000000 / 60)
 
-void die(const char *format, ...)
-{
-    va_list vargs;
-    va_start(vargs, format);
-    vfprintf(stderr, format, vargs);
-    va_end(vargs);
+struct {
+    ui_connection_t* conn;
+    ui_window_t* win;
+    cairo_surface_t* surface;
+    cairo_surface_t* backbuffer;
+    cairo_t* cr;
+    uint8_t keystate[NR_KEYS];
+} context;
+
+void die(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
     exit(1);
 }
 
-#define FPS 60
-#define FPS_UPDATE_TIME_MS (1000 / FPS)
+void os_context_init() {
+    memset(context.keystate, 0, sizeof(context.keystate));
 
-static struct
-{
-
-    struct fb_var_screeninfo var;
-    struct fb_fix_screeninfo fix;
-
-    int kbd;
-
-    uint8_t keys[NR_KEYS];
-
-} context;
-
-void os_video_init()
-{
-
-    int fd;
-
-    if ((fd = open("/dev/fb0", O_RDWR)) < 0)
-    {
-        fprintf(stderr, "nesemu: open() failed: cannot open /dev/fb0: %s\n", strerror(errno));
+    context.conn = ui_connect(NULL, 5000);
+    if(!context.conn) {
+        fprintf(stderr, "nesemu: ui_connect() failed: %s\n", strerror(errno));
         exit(1);
     }
 
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &context.var) < 0)
-    {
-        fprintf(stderr, "nesemu: ioctl(FBIOGET_VSCREENINFO) failed: %s\n", strerror(errno));
+    context.win = ui_window_create(context.conn, NESEMU_RESX * 2, NESEMU_RESY * 2, "NES Emulator");
+    if(!context.win) {
+        fprintf(stderr, "nesemu: ui_window_create() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+void os_context_bind(void* screen) {
+
+    if (!context.conn || !context.win) {
+        fprintf(stderr, "nesemu: os_video_init() called before ui_connect() and ui_window_create()\n");
         exit(1);
     }
 
-    if (ioctl(fd, FBIOGET_FSCREENINFO, &context.fix) < 0)
-    {
-        fprintf(stderr, "nesemu: ioctl(FBIOGET_FSCREENINFO) failed: %s\n", strerror(errno));
+    if (context.surface) {
+        cairo_surface_destroy(context.surface);
+        context.surface = NULL;
+    }
+
+    if (context.backbuffer) {
+        cairo_surface_destroy(context.backbuffer);
+        context.backbuffer = NULL;
+    }
+
+    if (context.cr) {
+        cairo_destroy(context.cr);
+        context.cr = NULL;
+    }
+    
+    context.surface = cairo_image_surface_create_for_data((unsigned char*)ui_window_pixels(context.win), CAIRO_FORMAT_RGB24, ui_window_width(context.win), ui_window_height(context.win), ui_window_stride(context.win));
+    if(!context.surface) {
+        fprintf(stderr, "nesemu: cairo_image_surface_create_for_data() failed\n");
         exit(1);
     }
 
-    if (!context.fix.smem_start || !context.var.xres_virtual || !context.var.yres_virtual)
-    {
-        fprintf(stderr, "nesemu: wrong framebuffer configuration\n");
+    context.backbuffer = cairo_image_surface_create_for_data((unsigned char*)screen, CAIRO_FORMAT_RGB24, NESEMU_RESX, NESEMU_RESY, NESEMU_RESX * sizeof(uint32_t));
+    if(!context.backbuffer) {
+        fprintf(stderr, "nesemu: cairo_image_surface_create_for_data() failed\n");
         exit(1);
     }
 
-    if (close(fd) < 0)
-    {
-        fprintf(stderr, "nesemu: close() failed: %s\n", strerror(errno));
-        exit(1);
-    }
-
-    if ((context.kbd = open("/dev/kbd", O_RDONLY)) < 0)
-    {
-        fprintf(stderr, "nesemu: open() failed: cannot open /dev/kbd: %s\n", strerror(errno));
-        exit(1);
-    }
-
-    if (fcntl(context.kbd, F_SETFL, O_NONBLOCK) < 0)
-    {
-        fprintf(stderr, "nesemu: fcntl(F_SETFL) failed: %s\n", strerror(errno));
+    context.cr = cairo_create(context.surface);
+    if(!context.cr) {
+        fprintf(stderr, "nesemu: cairo_create() failed\n");
         exit(1);
     }
 }
 
 void os_draw_frame(void* screen)
 {
+    cairo_save(context.cr);
 
-    uintptr_t d = (uintptr_t)context.fix.smem_start;
-    uintptr_t s = (uintptr_t)screen;
+    cairo_scale(context.cr,
+        (double)ui_window_width(context.win) / (double)NESEMU_RESX,
+        (double)ui_window_height(context.win) / (double)NESEMU_RESY
+    );
 
-    for (size_t y = 0; y < 240; y++)
-    {
+    cairo_set_source_surface(context.cr, context.backbuffer, 0, 0);
+    cairo_set_operator(context.cr, CAIRO_OPERATOR_SOURCE);
+    cairo_paint(context.cr);
 
-        memcpy((void *)d, (const void *)s, 256 * sizeof(uint32_t));
-
-        s += 256 * sizeof(uint32_t);
-        d += context.fix.line_length;
-    }
+    cairo_restore(context.cr);
+    cairo_surface_flush(context.surface);
 }
 
-void os_sleep(unsigned int ms)
-{
-    usleep(ms * 1000);
+void os_sleep(unsigned int us) {
+
+    usleep(us);
 }
 
-uint32_t os_getticks()
-{
+uint32_t os_getticks() {
 
-    struct timespec ts;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
-    {
-        fprintf(stderr, "nesemu: clock_gettime() failed: %s\n", strerror(errno));
-        exit(1);
+    struct timespec ts = {0};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+        return 0;
     }
 
-    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+    return ((uint64_t)ts.tv_sec * 1000000ULL) + ((uint64_t)ts.tv_nsec / 1000ULL);
 }
 
-int os_getkey()
-{
-
-    event_t ev;
-
-    while (read(context.kbd, &ev, sizeof(ev)) == sizeof(event_t))
-    {
-        context.keys[ev.ev_key.vkey] = ev.ev_key.down;
+uint8_t nes_key_state(uint8_t b) {
+    switch (b) {
+        case 0: // On / Off
+            return 1;
+        case 1: // A
+            return context.keystate[KEY_A] ? 1 : 0;
+        case 2: // B
+            return context.keystate[KEY_S] ? 1 : 0;
+        case 3: // SELECT
+            return context.keystate[KEY_C] ? 1 : 0;
+        case 4: // START
+            return context.keystate[KEY_ENTER] ? 1 : 0;
+        case 5: // UP
+            return context.keystate[KEY_UP] ? 1 : 0;
+        case 6: // DOWN
+            return context.keystate[KEY_DOWN] ? 1 : 0;
+        case 7: // LEFT
+            return context.keystate[KEY_LEFT] ? 1 : 0;
+        case 8: // RIGHT
+            return context.keystate[KEY_RIGHT] ? 1 : 0;
+        default:
+            return 0;
     }
- 
+    return 0;
 }
 
-/* Query a button's state.
-   Returns 1 if button #b is pressed. */
-uint8_t nes_key_state(uint8_t b)
-{
-    switch (b)
-    {
-    case 0: // On / Off
-        return 1;
-    case 1: // A
-        return context.keys[KEY_A] ? 1 : 0;
-    case 2: // B
-        return context.keys[KEY_S] ? 1 : 0;
-    case 3: // SELECT
-        return context.keys[KEY_C] ? 1 : 0;
-    case 4: // START
-        return context.keys[KEY_ENTER] ? 1 : 0;
-    case 5: // UP
-        return context.keys[KEY_UP] ? 1 : 0;
-    case 6: // DOWN
-        return context.keys[KEY_DOWN] ? 1 : 0;
-    case 7: // LEFT
-        return context.keys[KEY_LEFT] ? 1 : 0;
-    case 8: // RIGHT
-        return context.keys[KEY_RIGHT] ? 1 : 0;
-    default:
-        return 1;
+uint8_t nes_key_state_ctrl2(uint8_t b) {
+    switch (b) {
+        case 0: // On / Off
+            return 1;
+        case 1: // A
+            return 0;
+        case 2: // B
+            return 0;
+        case 3: // SELECT
+            return 0;
+        case 4: // START
+            return 0;
+        case 5: // UP
+            return 0;
+        case 6: // DOWN
+            return 0;
+        case 7: // LEFT
+            return 0;
+        case 8: // RIGHT
+            return 0;
+        default:
+            return 0;
     }
+    return 0;
 }
 
-uint8_t nes_key_state_ctrl2(uint8_t b)
-{
-    switch (b)
-    {
-    case 0: // On / Off
-        return 1;
-    case 1: // A
-        return 0;
-    case 2: // B
-        return 0;
-    case 3: // SELECT
-        return 0;
-    case 4: // START
-        return 0;
-    case 5: // UP
-        return 0;
-    case 6: // DOWN
-        return 0;
-    case 7: // LEFT
-        return 0;
-    case 8: // RIGHT
-        return 0;
-    default:
-        return 1;
-    }
-}
+int main(int argc, char** argv) {
 
-int main(int argc, char *argv[])
-{
-    /* NES part */
     static nes_ppu_t nes_ppu;
     static nes_cpu_t nes_cpu;
     static nes_cartridge_t nes_cart;
@@ -238,18 +217,16 @@ int main(int argc, char *argv[])
     uint32_t ppu_clock_index = 0;
     uint8_t ppu_status = 0;
 
-    if (argc != 2)
-    {
-        die("Please specify rom file\n");
+    if (argc < 2) {
+        fprintf(stderr, "nesemu: usage: %s <romfile>\n", argv[0]);
+        exit(1);
     }
 
     /* init cartridge */
     nes_cart_init(&nes_cart, &nes_memory);
-
-    /* load rom */
-    if (nes_cart_load_rom(&nes_cart, argv[1]) != 0)
-    {
-        die("ROM does not exist\n");
+    if (nes_cart_load_rom(&nes_cart, argv[1]) != 0) {
+        fprintf(stderr, "nesemu: failed to load ROM: %s\n", argv[1]);
+        exit(1);
     }
 
     /* init cpu */
@@ -259,24 +236,70 @@ int main(int argc, char *argv[])
     /* init ppu */
     nes_ppu_init(&nes_ppu, &nes_memory);
 
-    /* Initialization */
-    unsigned int lastTime = 0, currentTime;
+    /* init context */
+    os_context_init();
+    os_context_bind(nes_ppu.screen_bitmap);
 
-    os_video_init();
 
-    while (1)
-    {
+    uint64_t last_ticks = os_getticks();
+    uint64_t current_ticks = 0;
 
-        os_getkey();
+    bool running = true;
+    while(running) {
 
-        /* NES core loop */
-        for (;;)
-        {
+        for(;;) {
+
+            ui_event_t ev;
+            int e = ui_next_event(context.conn, &ev, 0);
+
+            if(e < 0) {
+                fprintf(stderr, "nesemu: ui_next_event() failed: %s\n", strerror(errno));
+                exit(1);
+            }
+
+            if(e == 0) {
+                break;
+            }
+
+            switch (ev.type) {
+
+                case UI_EVENT_CLOSE:
+                    running = false;
+                    break;
+
+                case UI_EVENT_KEY:
+                    if (ev.key.down) {
+                        context.keystate[ev.key.vkey] = 1;
+                    } else {
+                        context.keystate[ev.key.vkey] = 0;
+                    }
+                    break;
+
+                case UI_EVENT_CONFIGURE:
+                    if(ui_window_apply_configure(context.win) < 0) {
+                        fprintf(stderr, "nesemu: ui_window_apply_configure() failed: %s\n", strerror(errno));
+                        exit(1);
+                    }
+                    os_context_bind(nes_ppu.screen_bitmap);
+                    break;
+
+                default:
+                    break;
+            }
+
+            if(!running) {
+                break;
+            }
+
+        }
+
+        for(;;) {
+
             cpu_clocks = 0;
-            if (!ppu_rest_clocks)
-            {
-                if (ppu_status & PPU_STATUS_NMI)
+            if (!ppu_rest_clocks) {
+                if (ppu_status & PPU_STATUS_NMI) {
                     cpu_clocks += nes_cpu_nmi(&nes_cpu);
+                }
                 cpu_clocks += nes_cpu_run(&nes_cpu);
             }
 
@@ -284,8 +307,7 @@ int main(int argc, char *argv[])
             so we need to give the ppu some clocks here to catchup */
             ppu_clocks = (cpu_clocks * 3) + ppu_rest_clocks;
             ppu_status = 0;
-            for (ppu_clock_index = 0; ppu_clock_index < ppu_clocks; ppu_clock_index++)
-            {
+            for (ppu_clock_index = 0; ppu_clock_index < ppu_clocks; ppu_clock_index++) {
                 ppu_status |= nes_ppu_run(&nes_ppu, nes_cpu.num_cycles);
                 if (ppu_status & PPU_STATUS_FRAME_READY)
                     break;
@@ -299,44 +321,29 @@ int main(int argc, char *argv[])
 
             if (ppu_status & PPU_STATUS_FRAME_READY)
                 break;
+
         }
 
-        /* Commented DEBUG code */
-        // for(int i=0x0000;i<0x0FFF;i++)
-        // {
-        //     printf("Pattern Table 0: %x %x\n", i, (uint8_t)ppu_memory_access(&nes_memory, i, 0, ACCESS_READ_BYTE));
-        // }
-        // for(int i=0x1000;i<0x1FFF;i++)
-        // {
-        //     printf("Pattern Table 1: %x %x\n", i, (uint8_t)ppu_memory_access(&nes_memory, i, 0, ACCESS_READ_BYTE));
-        // }
-        // /* Nametable 0 contents */
-        // for(int i=0x2000;i<0x23FF;i++)
-        // {
-        //     printf("Nametable 0: %x %x\n", i, (uint8_t)ppu_memory_access(&nes_memory, i, 0, ACCESS_READ_BYTE));
-        // }
-        // /* Nametable 1 contents */
-        // for(int i=0x2400;i<0x27FF;i++)
-        // {
-        //     printf("Nametable 1: %x %x\n", i, (uint8_t)ppu_memory_access(&nes_memory, i, 0, ACCESS_READ_BYTE));
-        // }
-        // for(int i=0x3F00;i<=0x3F1F;i++)
-        // {
-        //     printf("PALLETE: %x %x\n", i, ppu_memory_access(&nes_memory, i, 0, ACCESS_READ_BYTE));
-        // }
-        // for(int i=0;i<256;i++)
-        // {
-        //     printf("OAM: %d %x\n", i, nes_memory.oam_memory[i]);
-        // }
-
         os_draw_frame(nes_ppu.screen_bitmap);
+        
+        ui_window_damage_all(context.win);
+        if(ui_window_commit(context.win) < 0) {
+            fprintf(stderr, "nesemu: ui_window_commit() failed: %s\n", strerror(errno));
+            exit(1);
+        }
 
-        /* 60 FPS framerate limit */
-        // while ((currentTime = os_getticks()) < (lastTime + FPS_UPDATE_TIME_MS))
-            // ;
 
-        lastTime = currentTime;
+
+        if ((current_ticks = os_getticks()) < last_ticks + NESEMU_US_PER_FRAME) {
+            os_sleep((last_ticks + NESEMU_US_PER_FRAME) - current_ticks);
+        }
+
+        last_ticks = current_ticks;
+
     }
+
+    ui_window_destroy(context.win);
+    ui_disconnect(context.conn);
 
     return 0;
 }
