@@ -4,8 +4,8 @@ SRCS=$(shell find nes -name '*.c')
 HDRS=$(shell find nes -name '*.h')
 
 all: nesemu
-nesemu: $(SRCS) $(HDRS)
-	$(CC) -o $@ $(SRCS) $(CFLAGS) $(LDFLAGS) $(LIBS)
+nesemu: main.c $(SRCS) $(HDRS)
+	$(CC) -o $@ main.c $(SRCS) $(CFLAGS) $(LDFLAGS) $(LIBS)
 
 install: nesemu
 	mkdir -p $(DESTDIR)/usr/bin
